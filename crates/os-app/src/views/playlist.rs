@@ -159,7 +159,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let g = PGeom::new(s, grid);
     let (sx, sy) = s.playlist_scroll;
     let bar_w = s.playlist_bar_w;
-    let bar_t = (g.ppq * 4) as f32;
+    let bar_t = g.bar_ticks as f32;
 
     // Overview (horizontal scroll bar with a miniature of the clips) + ruler. The song extends 16 bars past
     // its last clip, at least 100 bars; 500 tracks.
@@ -638,7 +638,7 @@ fn overview(ui: &mut Ui, s: &State, over: Rect, total_ticks: f32) {
 
 /// The bar the Start marker is in (0 without one): bars count from it (§7a).
 fn start_bar(g: &PGeom, start: Option<u32>) -> i32 {
-    start.map_or(0, |p| (p / (g.ppq * 4).max(1)) as i32)
+    start.map_or(0, |p| (p / g.bar_ticks.max(1)) as i32)
 }
 
 /// Bar numbers, time selection, song position (§7).
@@ -803,8 +803,10 @@ fn grid_lines(ui: &mut Ui, g: &PGeom, bar_w: f32, sb: i32) {
     // Lines at the theme's line strength (spec: ui/flstheme.md §3, PLGridContrast).
     let beat = t.pl_line(t.grid_gap.mix(t.grid, 0.4));
     let bar_line = t.pl_line(t.grid_bar);
-    let unit = pl::grid_ticks(g.ppq, bar_w) as f32 * g.ppt;
+    let unit = pl::grid_ticks(g.ppq, g.beat_ticks, g.bar_ticks, bar_w) as f32 * g.ppt;
     let per_bar = ((bar_w / unit).round() as i32).max(1);
+    // A beat's width: its lines are drawn stronger than the steps between them.
+    let beat_px = bar_w * g.beat_ticks as f32 / g.bar_ticks.max(1) as f32;
     // Bar b's x on the drawing grid (`PGeom::xs`), plus `d` content pixels.
     let bar_x = |b: i32, d: f32| g.xs(f64::from(b) * f64::from(bar_w) + f64::from(d));
     let mut b = first_bar;
@@ -815,7 +817,7 @@ fn grid_lines(ui: &mut Ui, g: &PGeom, bar_w: f32, sb: i32) {
         }
         if bar_step == 1 && per_bar > 1 {
             for q in 1..per_bar {
-                let c = if unit * q as f32 % (bar_w / 4.0) < 0.5 { beat } else { beat.mix(t.grid, 0.5) };
+                let c = if unit * q as f32 % beat_px < 0.5 { beat } else { beat.mix(t.grid, 0.5) };
                 ui.c.fill_rect(Rect::new(bar_x(b, q as f32 * unit), grid.y, 1.0, grid.h), c);
             }
         }

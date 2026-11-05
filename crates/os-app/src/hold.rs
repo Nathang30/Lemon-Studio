@@ -174,7 +174,7 @@ impl App {
         let g = pl::PGeom::new(&self.state, grid);
         let unit = match pl::grid_snap(&self.state) {
             pl::Snap::None => g.ppq / 4,
-            sn => sn.ticks(g.ppq, g.bar_w),
+            sn => g.unit(sn),
         };
         // `fresh`: the copies are a change even where they end up.
         let d = PlDrag::Move { x0: x0 - unit as f32 * g.ppt, y0, orig: copies, fresh: true };
@@ -490,7 +490,7 @@ mod tests {
         let (mut app, (x, y)) = playlist_app(&mut c);
         let orig = pl::clips(&app.state)[0];
         let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
-        let unit = pl::grid_snap(&app.state).ticks(g.ppq, g.bar_w);
+        let unit = g.unit(pl::grid_snap(&app.state));
         let steps = app.state.history.len();
         press(&mut app, x, y);
         let now = at(&app, 700);

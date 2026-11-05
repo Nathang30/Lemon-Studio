@@ -48,6 +48,8 @@ use crate::icons::{self, Icon};
 /// Per-frame values that don't live in `State`.
 pub struct FrameInfo {
     pub title: String,
+    /// The main window is in front (the traffic lights are grey when it is not).
+    pub focused: bool,
     pub hint: Cow<'static, str>,
     pub playing: bool,
     /// Playing but held by Play (pause).
@@ -162,8 +164,14 @@ pub const BROWSER_W: f32 = 209.0;
 /// Width of the docked browser incl. the splitter, as dragged (`State::browser_w`), at most half the window (spec:
 /// ui/browser.md §9).
 pub fn browser_w(s: &State) -> f32 {
+    if s.browser_folded {
+        return FOLD_W;
+    }
     s.browser_w.min(s.screen.0 / 2.0).max(BROWSER_W)
 }
+
+/// Width of the folded browser: a strip with three dots, which unfolds when clicked.
+pub const FOLD_W: f32 = 18.0;
 
 /// Paints the frame; returns the number of hits registered before the overlays (menus, popups, picker...), which cover
 /// docked plugin windows.

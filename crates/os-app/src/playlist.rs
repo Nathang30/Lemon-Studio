@@ -144,37 +144,45 @@ impl Snap {
         }
     }
 
-    /// Snap unit in ticks at the zoom `bar_w` (Line / Cell = the drawn grid line).
+    /// Snap unit in ticks at the zoom `bar_w` (Line / Cell = the drawn grid line), for a 4/4 bar. The playlist uses
+    /// [`Snap::ticks_in`] with the project's own bar.
     pub fn ticks(self, ppq: u32, bar_w: f32) -> u32 {
+        self.ticks_in(ppq, ppq, ppq * 4, bar_w)
+    }
+
+    /// Snap unit in ticks for a project whose beat is `beat` ticks and bar `bar` ticks (`Project::beat_ticks` and
+    /// `bar_ticks`), at the zoom `bar_w` pixels a bar. A step stays a sixteenth; Beat and Bar follow the time settings.
+    pub fn ticks_in(self, ppq: u32, beat: u32, bar: u32, bar_w: f32) -> u32 {
         let step = ppq / 4;
         match self {
             Snap::None => 1,
-            Snap::Line | Snap::Cell => grid_ticks(ppq, bar_w),
+            Snap::Line | Snap::Cell => grid_ticks(ppq, beat, bar, bar_w),
             Snap::SixthStep => step / 6,
             Snap::QuarterStep => step / 4,
             Snap::ThirdStep => step / 3,
             Snap::HalfStep => step / 2,
             Snap::Step => step,
-            Snap::SixthBeat => ppq / 6,
-            Snap::QuarterBeat => ppq / 4,
-            Snap::ThirdBeat => ppq / 3,
-            Snap::HalfBeat => ppq / 2,
-            Snap::Beat => ppq,
-            Snap::Bar => ppq * 4,
+            Snap::SixthBeat => beat / 6,
+            Snap::QuarterBeat => beat / 4,
+            Snap::ThirdBeat => beat / 3,
+            Snap::HalfBeat => beat / 2,
+            Snap::Beat => beat,
+            Snap::Bar => bar,
         }
         .max(1)
     }
 }
 
-/// Ticks between the drawn grid lines: steps when a beat is wide, beats normally, bars when zoomed far out.
-pub fn grid_ticks(ppq: u32, bar_w: f32) -> u32 {
-    let beat_px = bar_w / 4.0;
+/// Ticks between the drawn grid lines: steps when a beat is wide, beats normally, bars when zoomed far out. A beat is
+/// `beat` ticks and a bar `bar` ticks (the project's time settings).
+pub fn grid_ticks(ppq: u32, beat: u32, bar: u32, bar_w: f32) -> u32 {
+    let beat_px = bar_w * beat as f32 / bar.max(1) as f32;
     if beat_px >= 64.0 {
-        ppq / 4
+        (ppq / 4).min(beat)
     } else if beat_px >= 6.0 {
-        ppq
+        beat
     } else {
-        ppq * 4
+        bar
     }
 }
 
@@ -961,6 +969,9 @@ pub struct PGeom {
     pub scroll_x: f32,
     pub scroll_y: f32,
     pub ppq: u32,
+    /// Ticks in a beat and in a bar (the project's time settings).
+    pub beat_ticks: u32,
+    pub bar_ticks: u32,
     pub bar_w: f32,
     pub rows: std::rc::Rc<Rows>,
 }
@@ -980,7 +991,8 @@ impl PGeom {
         let ppq = u32::from(s.project.ppq.max(4));
         let bar_w = s.playlist_bar_w;
         let rows = std::rc::Rc::new(Rows::new(s));
-        PGeom { grid, ppt: bar_w / (ppq * 4) as f32, scroll_x: s.playlist_scroll.0, scroll_y: s.playlist_scroll.1, ppq, bar_w, rows }
+        let (beat_ticks, bar_ticks) = (s.project.beat_ticks(), s.project.bar_ticks());
+        PGeom { grid, ppt: bar_w / bar_ticks as f32, scroll_x: s.playlist_scroll.0, scroll_y: s.playlist_scroll.1, ppq, beat_ticks, bar_ticks, bar_w, rows }
     }
 
     /// Screen x of content x `px` (pixels from the song start), exact on the 1/256 px grid. Every position the
@@ -1001,6 +1013,11 @@ impl PGeom {
 
     pub fn x_of(&self, tick: f32) -> f32 {
         self.x64(f64::from(tick)) as f32
+    }
+
+    /// The snap unit `sn` in ticks at this zoom, for the project's beat and bar.
+    pub fn unit(&self, sn: Snap) -> u32 {
+        sn.ticks_in(self.ppq, self.beat_ticks, self.bar_ticks, self.bar_w)
     }
 
     pub fn tick_at(&self, x: f32) -> f32 {
@@ -1229,8 +1246,14 @@ fn ppq(s: &State) -> u32 {
     u32::from(s.project.ppq.max(4))
 }
 
+/// Ticks in a bar of the project's time settings (`Project::bar_ticks`).
 fn bar(s: &State) -> u32 {
-    ppq(s) * 4
+    s.project.bar_ticks()
+}
+
+/// The snap unit `sn` in ticks at the zoom `bar_w`, for the project's own beat and bar.
+pub fn snap_unit(s: &State, sn: Snap, bar_w: f32) -> u32 {
+    sn.ticks_in(ppq(s), s.project.beat_ticks(), s.project.bar_ticks(), bar_w)
 }
 
 fn channel_of(s: &State, ch: u16) -> Option<&Channel> {
@@ -1436,7 +1459,7 @@ pub fn source_len(s: &State, src: ClipSource) -> u32 {
         ClipSource::Channel(c) => {
             if let Some(a) = s.project.automation(c) {
                 let beats = a.points.last().map_or(0.0, |p| p.beat);
-                return ((beats * f64::from(ppq(s))).round() as u32).max(bar / 4);
+                return ((beats * f64::from(ppq(s))).round() as u32).max(ppq(s));
             }
             // The whole sample at the channel's speed (`fit_audio`).
             let t = channel_of(s, c).map_or(0.0, |ch| audio_ticks(s, ch));
@@ -1551,7 +1574,7 @@ pub fn snap_place(s: &State, g: &PGeom, tick: f32, alt: bool) -> u32 {
     if alt || sn == Snap::None {
         return t as u32;
     }
-    let u = sn.ticks(g.ppq, g.bar_w);
+    let u = g.unit(sn);
     if sn == Snap::Cell { t as u32 / u * u } else { (t / u as f32).round() as u32 * u }
 }
 
@@ -1564,7 +1587,7 @@ fn snap_down(s: &State, g: &PGeom, tick: f32, alt: bool) -> u32 {
     if let Some(c) = catch(s, g, tick.max(0.0), &[]) {
         return c;
     }
-    let u = grid_snap(s).ticks(g.ppq, g.bar_w);
+    let u = g.unit(grid_snap(s));
     t - t % u
 }
 
@@ -1582,7 +1605,7 @@ pub fn snap_delta(s: &State, g: &PGeom, dt: f32, alt: bool) -> i64 {
     if alt {
         return dt.round() as i64;
     }
-    let u = grid_snap(s).ticks(g.ppq, g.bar_w) as f32;
+    let u = g.unit(grid_snap(s)) as f32;
     ((dt / u).round() * u) as i64
 }
 
@@ -3530,7 +3553,7 @@ fn snap_round(s: &State, g: &PGeom, tick: f32, alt: bool) -> u32 {
     if alt {
         return tick.max(0.0).round() as u32;
     }
-    let u = grid_snap(s).ticks(g.ppq, g.bar_w) as f32;
+    let u = g.unit(grid_snap(s)) as f32;
     ((tick / u).round() * u).max(0.0) as u32
 }
 
@@ -3627,7 +3650,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
         PlDrag::ResizeR { x0, orig } => {
             let skip: Vec<usize> = orig.iter().map(|&(i, _)| i).collect();
             let dt = orig.first().map_or(0, |(_, c)| snap_edge(s, &g, c.end(), (x - x0) / g.ppt, alt, &skip));
-            let min = if alt { 1 } else { grid_snap(s).ticks(g.ppq, g.bar_w) } as i64;
+            let min = if alt { 1 } else { g.unit(grid_snap(s)) } as i64;
             for &(i, o) in &orig {
                 let len = (i64::from(o.length) + dt).max(min) as u32;
                 if !stretch_clip(s, i, &o, o.position, len) {
@@ -3723,7 +3746,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             let s = &mut app.state;
             let mut beat = beat0 + f64::from((x - x0) / g.ppt) / f64::from(g.ppq);
             if !alt {
-                let u = f64::from(grid_snap(s).ticks(g.ppq, g.bar_w)) / f64::from(g.ppq);
+                let u = f64::from(g.unit(grid_snap(s))) / f64::from(g.ppq);
                 let (w0, _) = window(s, &c);
                 beat = w0 + ((beat - w0) / u).round() * u;
             }
@@ -3903,7 +3926,7 @@ fn zoom_to(app: &mut App, grid: Rect, x0: f32, y0: f32) {
     let s = &mut app.state;
     let g = PGeom::new(s, grid);
     s.playlist.zoom_back = Some((s.playlist_bar_w, s.playlist_scroll.0, s.playlist_scroll.1));
-    let bar = (g.ppq * 4) as f32;
+    let bar = g.bar_ticks as f32;
     if (x1 - x0).abs() < 4.0 {
         let t = g.tick_at(x1);
         s.playlist_bar_w = (s.playlist_bar_w * 2.0).min(600.0);
@@ -4582,7 +4605,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         }
         Cmd::ShiftTime(d) => {
             snapshot(s);
-            let u = grid.map_or(ppq(s), |g| grid_snap(s).ticks(ppq(s), PGeom::new(s, g).bar_w)) as i64;
+            let u = grid.map_or(s.project.beat_ticks(), |g| PGeom::new(s, g).unit(grid_snap(s))) as i64;
             let idx = targets(s);
             let arr = arr_mut(s);
             let min = idx.iter().filter_map(|&i| arr.clips.get(i)).map(|c| i64::from(c.position)).min().unwrap_or(0);
@@ -5121,9 +5144,8 @@ pub(crate) fn hsl_rgb(h: f32, s: f32, l: f32) -> Rgb {
 /// Tools > Quick quantize start times (§10, OS): every selected clip (every clip when none is selected) starts on the
 /// nearest snap step (on the nearest beat when snapping is off); lengths stay. One undo step.
 pub fn quantize_starts(s: &mut State) -> String {
-    let p = ppq(s);
-    let unit = match grid_snap(s).ticks(p, s.playlist_bar_w) {
-        0 | 1 => p,
+    let unit = match snap_unit(s, grid_snap(s), s.playlist_bar_w) {
+        0 | 1 => s.project.beat_ticks(),
         u => u,
     };
     let idx: Vec<usize> = if s.playlist.sel.is_empty() { (0..clips(s).len()).collect() } else { s.playlist.sel.clone() };

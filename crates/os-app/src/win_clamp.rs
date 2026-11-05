@@ -122,11 +122,89 @@ fn set_pos(s: &mut State, w: Win, pos: (f32, f32)) {
     }
 }
 
-/// Window `w` dragged by its title bar to top-left `want`: as far as `keep` lets it.
+/// How close (logical px) a dragged window's edge comes to the workspace's before it sticks to it.
+pub const SNAP_PX: f32 = 14.0;
+
+/// The workspace edges a window is stuck to: on each axis -1 = the left / top edge, 1 = the right / bottom edge, 0 =
+/// none. A stuck window keeps its edge when the workspace changes size (`keep_all`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Pin {
+    pub x: i8,
+    pub y: i8,
+}
+
+impl Pin {
+    fn is_free(self) -> bool {
+        self == Pin::default()
+    }
+}
+
+/// Top-left for a `w` by `h` window wanted at (`x`, `y`) in `work`, stuck to the workspace's edges and corners it comes
+/// within `SNAP_PX` of, and which edges those are.
+pub fn snap(x: f32, y: f32, w: f32, h: f32, work: Rect) -> ((f32, f32), Pin) {
+    let axis = |at: f32, len: f32, lo: f32, hi: f32| -> (f32, i8) {
+        if (at - lo).abs() <= SNAP_PX {
+            (lo, -1)
+        } else if (hi - (at + len)).abs() <= SNAP_PX {
+            (hi - len, 1)
+        } else {
+            (at, 0)
+        }
+    };
+    let (x, px) = axis(x, w, work.x, work.right());
+    let (y, py) = axis(y, h, work.y, work.bottom());
+    ((x, y), Pin { x: px, y: py })
+}
+
+/// Where a window of size `r` stuck by `pin` sits in `work` now (its free axis stays).
+fn pinned(r: Rect, pin: Pin, work: Rect) -> (f32, f32) {
+    let x = match pin.x {
+        -1 => work.x,
+        1 => work.right() - r.w,
+        _ => r.x,
+    };
+    let y = match pin.y {
+        -1 => work.y,
+        1 => work.bottom() - r.h,
+        _ => r.y,
+    };
+    (x, y)
+}
+
+/// The edges window `w` is stuck to.
+pub fn pin_of(s: &State, w: Win) -> Pin {
+    s.pins.iter().find(|(p, _)| *p == w).map_or_else(Pin::default, |&(_, pin)| pin)
+}
+
+fn set_pin(s: &mut State, w: Win, pin: Pin) {
+    s.pins.retain(|(p, _)| *p != w);
+    if !pin.is_free() {
+        s.pins.push((w, pin));
+    }
+}
+
+/// Window `w` dragged by its title bar to top-left `want`: as far as `keep` lets it, then stuck to the workspace's
+/// edges and corners it comes close to. It stays stuck there when the workspace changes (`keep_all`).
 pub fn drag_to(s: &mut State, w: Win, want: (f32, f32)) {
     if let Some(r) = rect_of(s, w) {
-        set_pos(s, w, keep(want.0, want.1, r.w, s.work_rect()));
+        let work = s.work_rect();
+        let (kx, ky) = keep(want.0, want.1, r.w, work);
+        let ((x, y), pin) = snap(kx, ky, r.w, r.h, work);
+        set_pin(s, w, pin);
+        set_pos(s, w, (x, y));
     }
+}
+
+/// A window resized: it stays stuck to the workspace's edges it now touches, and no longer to those it left.
+pub fn resized(s: &mut State, w: Win) {
+    let Some(r) = rect_of(s, w) else { return };
+    let work = s.work_rect();
+    let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+    let pin = Pin {
+        x: if near(r.x, work.x) { -1 } else if near(r.right(), work.right()) { 1 } else { 0 },
+        y: if near(r.y, work.y) { -1 } else if near(r.bottom(), work.bottom()) { 1 } else { 0 },
+    };
+    set_pin(s, w, pin);
 }
 
 /// The windows placed by position (Channel rack, channel settings, Plugin performance monitor, Tempo tapper) keep their
@@ -138,9 +216,12 @@ pub fn keep_all(s: &mut State) -> bool {
         return false;
     }
     let mut moved = false;
-    for w in crate::floating::PLACED.iter().map(|p| p.win) {
+    for w in crate::floating::PLACED.iter().map(|p| p.win).chain([Win::Playlist, Win::Mixer, Win::PianoRoll]) {
         let Some(r) = rect_of(s, w) else { continue };
-        let pos = keep(r.x, r.y, r.w, work);
+        // A window stuck to the workspace's edges keeps them as the workspace changes size.
+        let pin = pin_of(s, w);
+        let (x, y) = if pin.is_free() { (r.x, r.y) } else { pinned(r, pin, work) };
+        let pos = keep(x, y, r.w, work);
         if pos != (r.x, r.y) {
             set_pos(s, w, pos);
             moved = true;
@@ -157,6 +238,7 @@ impl App {
     /// rect too.
     pub(crate) fn move_into_workspace(&mut self) {
         let s = &mut self.state;
+        s.pins.clear();
         let work = s.work_rect();
         for w in [Win::Playlist, Win::Mixer, Win::PianoRoll] {
             if let Some(i) = w.slot() {
@@ -391,7 +473,9 @@ mod tests {
                 let before = rect(&app, w);
                 drag(&mut app, &mut c, w, strip, back);
                 let after = rect(&app, w);
-                assert_eq!((after.x - before.x, after.y - before.y), back, "{w:?} dragged back from {strip:?}");
+                // Within the snap distance: a window coming close to the workspace's edge sticks to it (`snap`).
+                let off = ((after.x - before.x - back.0).abs(), (after.y - before.y - back.1).abs());
+                assert!(off.0 <= SNAP_PX && off.1 <= SNAP_PX, "{w:?} dragged back from {strip:?}: moved ({}, {})", after.x - before.x, after.y - before.y);
             }
         }
     }
@@ -498,5 +582,29 @@ mod tests {
         for w in WINDOWS {
             assert_eq!(rect(&app, w).right(), work.x + KEEP_W, "{w:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod snap_tests {
+    use super::*;
+
+    #[test]
+    fn a_window_close_to_an_edge_or_corner_sticks_to_it() {
+        let work = Rect::new(200.0, 80.0, 1000.0, 700.0);
+        // Left and top corner.
+        assert_eq!(snap(210.0, 90.0, 300.0, 200.0, work), ((200.0, 80.0), Pin { x: -1, y: -1 }));
+        // Right and bottom corner: the window's far edges meet the workspace's.
+        assert_eq!(snap(890.0, 570.0, 300.0, 200.0, work), ((900.0, 580.0), Pin { x: 1, y: 1 }));
+        // Far from every edge: free.
+        assert_eq!(snap(500.0, 300.0, 300.0, 200.0, work), ((500.0, 300.0), Pin::default()));
+    }
+
+    #[test]
+    fn a_stuck_window_keeps_its_edge_when_the_workspace_changes() {
+        let r = Rect::new(900.0, 580.0, 300.0, 200.0);
+        let smaller = Rect::new(200.0, 80.0, 800.0, 500.0);
+        assert_eq!(pinned(r, Pin { x: 1, y: 1 }, smaller), (700.0, 380.0));
+        assert_eq!(pinned(r, Pin { x: -1, y: 0 }, smaller), (200.0, 580.0));
     }
 }

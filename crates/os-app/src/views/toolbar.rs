@@ -276,7 +276,8 @@ fn panel(ui: &mut Ui, c: &Ctx, p: Panel) -> bool {
     true
 }
 
-/// Caption buttons.
+/// Caption buttons (Windows and Linux): minimize, maximize / restore, close.
+#[cfg(not(target_os = "macos"))]
 fn caption(ui: &mut Ui, c: &Ctx) {
     let (t, a) = (ui.t, c.a);
     for (x, icon, action, hint) in [
@@ -288,6 +289,50 @@ fn caption(ui: &mut Ui, c: &Ctx) {
         let hov = ui.hit(r, action, hint);
         super::button_face(ui, r, if hov { super::Look::Hover } else { super::Look::Off });
         icons::draw(ui.c, icon, r.inset(3.5), if hov { ui.t.tx(0xffffff) } else { t.glyph });
+    }
+}
+
+/// Caption buttons on macOS: the traffic lights, at the left, as in a Mac app. Red closes, yellow minimizes, green
+/// goes full screen and back. Their glyphs show while the pointer is over any of the three; in a window that is not
+/// in front they are grey until then.
+#[cfg(target_os = "macos")]
+fn caption(ui: &mut Ui, c: &Ctx) {
+    use os_theme::Color;
+    let a = c.a;
+    // (centre x, action, hint, face, rim, glyph)
+    let lights = [
+        (14.0, Action::Close, "Exit Lemon Studio", Color::rgb(0xff5f57), Color::rgb(0xe0443e), Color::rgb(0x4d0000)),
+        (34.0, Action::Minimize, "Minimize", Color::rgb(0xfebc2e), Color::rgb(0xdea123), Color::rgb(0x995700)),
+        (54.0, Action::Fullscreen, "Full screen (hides the menu bar and the Dock)", Color::rgb(0x28c840), Color::rgb(0x1aab29), Color::rgb(0x006500)),
+    ];
+    let rects: Vec<Rect> = lights.iter().map(|l| a.r(Rect::new(l.0 - 8.0, 12.0, 16.0, 16.0))).collect();
+    let mut over = false;
+    for (r, l) in rects.iter().zip(&lights) {
+        over |= ui.hit(*r, l.1.clone(), l.2);
+    }
+    let focused = c.f.focused;
+    for (i, (r, l)) in rects.iter().zip(&lights).enumerate() {
+        let pressed = ui.down(*r, &l.1);
+        let (face, rim) = if focused || over { (l.3, l.4) } else { (Color::rgb(0x5d5f62), Color::rgb(0x4b4d50)) };
+        let (face, rim) = if pressed { (face.shade(-0.2), rim.shade(-0.2)) } else { (face, rim) };
+        let (cx, cy) = (r.cx(), r.cy());
+        ui.c.fill_circle(cx, cy, 6.0, face);
+        ui.c.stroke_circle(cx, cy, 5.75, 0.5, rim);
+        if over {
+            let g = l.5;
+            match i {
+                0 => {
+                    ui.c.line(cx - 2.2, cy - 2.2, cx + 2.2, cy + 2.2, 1.1, g);
+                    ui.c.line(cx - 2.2, cy + 2.2, cx + 2.2, cy - 2.2, 1.1, g);
+                }
+                1 => ui.c.line(cx - 2.8, cy, cx + 2.8, cy, 1.1, g),
+                _ => {
+                    // Two small triangles pointing at opposite corners, as the zoom glyph.
+                    ui.c.fill_polygon(&[(cx - 2.6, cy + 2.6), (cx - 2.6, cy - 0.6), (cx + 0.6, cy + 2.6)], g);
+                    ui.c.fill_polygon(&[(cx + 2.6, cy - 2.6), (cx + 2.6, cy + 0.6), (cx - 0.6, cy - 2.6)], g);
+                }
+            }
+        }
     }
 }
 

@@ -25,6 +25,11 @@ impl App {
             self.browser_split_press();
             return true;
         }
+        if *a == Action::BrowserUnfold {
+            self.state.browser_folded = false;
+            self.invalidate();
+            return true;
+        }
         let s = &mut self.state;
         match *a {
             Action::BrowserTab(i) => {
@@ -414,7 +419,10 @@ impl App {
         matches!(key, Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)) && !ctrl && !alt && !self.shift && (self.over_browser() || self.state.browser_search_focus)
     }
 
-    /// A press on the browser's splitter: drags it; a double click gives the browser its default width (spec §9).
+    /// How far (px) the splitter is dragged below the browser's least width before the browser folds.
+const FOLD_DRAG: f32 = 30.0;
+
+/// A press on the browser's splitter: drags it; a double click gives the browser its default width (spec §9).
     fn browser_split_press(&mut self) {
         let now = std::time::Instant::now();
         let s = &mut self.state;
@@ -432,8 +440,15 @@ impl App {
     /// to half the window. Everything right of it moves, so the whole frame is repainted.
     pub(crate) fn browser_split_drag(&mut self, right: f32) {
         let s = &mut self.state;
+        // Dragged well past its least width, outward, it folds to a strip (`views::FOLD_W`); dragged back, it unfolds.
+        let fold = right < crate::views::BROWSER_W - Self::FOLD_DRAG;
+        if fold != s.browser_folded {
+            s.browser_folded = fold;
+            self.invalidate();
+        }
+        let s = &mut self.state;
         let w = right.min(s.screen.0 / 2.0).max(crate::views::BROWSER_W).round();
-        if w != s.browser_w {
+        if !fold && w != s.browser_w {
             s.browser_w = w;
             self.invalidate();
         }

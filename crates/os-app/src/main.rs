@@ -1152,6 +1152,8 @@ impl ApplicationHandler for Shell {
                 self.app.main_focused(focused);
                 // Audio ▸ Auto close, where the system can't tell which program is in front (`auto_close`).
                 self.app.auto_close.main_focused = focused;
+                // The traffic lights show whether the window is in front.
+                window.request_redraw();
                 if !focused {
                     self.grab = None;
                     self.unmax = None;
@@ -1313,6 +1315,11 @@ impl ApplicationHandler for Shell {
                 if self.app.want_maximize {
                     self.app.want_maximize = false;
                     set_maximized(&window, !is_maximized(&window));
+                }
+                if self.app.want_fullscreen {
+                    self.app.want_fullscreen = false;
+                    #[cfg(target_os = "macos")]
+                    crate::macos::set_fullscreen(&window, !crate::macos::is_fullscreen());
                 }
                 if self.app.want_close {
                     self.app.want_close = false;

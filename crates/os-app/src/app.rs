@@ -199,6 +199,8 @@ pub enum Action {
     CableDebug(crate::cable::DebugAct),
     Minimize,
     Maximize,
+    /// macOS: the green traffic light, full screen without the menu bar and the Dock (and back).
+    Fullscreen,
     Close,
     DragWindow,
     /// The toolbar editor's panels, grips, palette tiles and buttons (spec: ui/toolbar-menu.md §8).
@@ -266,6 +268,8 @@ pub enum Action {
     BrowserClear,
     /// The splitter right of the browser: drag to resize it, double-click for the default width (§9).
     BrowserSplitter,
+    /// The folded browser's strip: unfolds it.
+    BrowserUnfold,
     PlaylistArea,
     MixerArea,
     RackArea,
@@ -1095,6 +1099,8 @@ pub struct State {
     /// Width of the docked browser incl. its splitter, as dragged (`views::browser_w` keeps it in range), kept between
     /// runs, and the last press on the splitter, for its double click (spec: ui/browser.md §9).
     pub browser_w: f32,
+    /// Dragged outward past its least width, the browser folds to a thin strip (`views::FOLD_W`); a click on it unfolds.
+    pub browser_folded: bool,
     pub browser_split_click: Option<std::time::Instant>,
     /// The hovered row whose label is scrolling, as last painted (spec: ui/browser.md §9).
     pub browser_marquee: std::cell::RefCell<Option<views::browser::Marquee>>,
@@ -1138,6 +1144,8 @@ pub struct State {
     pub pat_ui: crate::patterns::PatternUi,
     /// Playlist, Mixer, Piano roll (see `Win::slot`).
     pub wins: [WinState; 3],
+    /// The workspace edges each floating window is stuck to (`win_clamp::Pin`).
+    pub pins: Vec<(Win, crate::win_clamp::Pin)>,
     /// Size of the shell window in logical pixels (set each paint).
     pub screen: (f32, f32),
     /// The main window's monitor's own scale (device pixels per logical one, whatever Main GUI scaling says; set at
@@ -1377,6 +1385,7 @@ pub struct App {
     pub(crate) auto_close: crate::auto_close::AutoClose,
     pub want_minimize: bool,
     pub want_maximize: bool,
+    pub want_fullscreen: bool,
     pub want_close: bool,
     /// The window may close now (unsaved changes were answered): the shell ends the program.
     pub want_exit: bool,
@@ -1531,6 +1540,7 @@ impl App {
                 browser_hist: Vec::new(),
                 browser_hist_pos: 0,
                 browser_w: crate::browser::load_width(),
+                browser_folded: false,
                 browser_split_click: None,
                 browser_marquee: Default::default(),
                 browser_favs: crate::browser::load_favs(),
@@ -1567,6 +1577,7 @@ impl App {
                 global_snap: Default::default(),
                 pat_ui: Default::default(),
                 wins: crate::arrange::default_wins(),
+                pins: Vec::new(),
                 screen: (1920.0, 1080.0),
                 display_scale: 1.0,
                 ui_scale: 1.0,
@@ -1629,6 +1640,7 @@ impl App {
             auto_close: Default::default(),
             want_minimize: false,
             want_maximize: false,
+            want_fullscreen: false,
             want_close: false,
             want_exit: false,
             quit_answer: None,
@@ -4245,6 +4257,7 @@ impl App {
     fn frame_info(&self) -> views::FrameInfo {
         views::FrameInfo {
             title: self.title(),
+            focused: self.auto_close.main_focused,
             hint: self.hint.clone(),
             playing: self.shown.playing,
             paused: self.shown.paused,
@@ -5319,11 +5332,22 @@ impl App {
         crate::control::edit_app(self, crate::control::command::TIME_SIGNATURE, crate::control::command::Region::Settings, |app| app.set_bar_now(beats, steps))
     }
 
+    /// The playlist's zoom counts pixels a bar: after the bar changed from `old` ticks, scale it (and the scroll) so a
+    /// tick keeps its width and the view stays where it was, while the grid follows the new bar and beat.
+    fn keep_playlist_scale(&mut self, old: u32) {
+        let s = &mut self.state;
+        let k = s.project.bar_ticks() as f32 / old.max(1) as f32;
+        s.playlist_bar_w = (s.playlist_bar_w * k).clamp(4.0, 600.0);
+        s.playlist_scroll.0 *= k;
+    }
+
     fn set_bar_now(&mut self, beats: u16, steps: u16) -> Option<String> {
         let bar = (beats.max(1), steps.max(1));
         if self.state.project.bar() != bar {
+            let old = self.state.project.bar_ticks();
             self.state.project.bar = Some(bar);
             self.state.piano.dirty = true;
+            self.keep_playlist_scale(old);
         }
         self.invalidate();
         Some(bar_text(&self.state.project))
@@ -5337,6 +5361,7 @@ impl App {
     }
 
     fn set_time_mode_now(&mut self, signature: bool) -> Option<String> {
+        let old = self.state.project.bar_ticks();
         let s = &mut self.state;
         let now = s.project.bar_is_signature();
         if now != signature {
@@ -5345,6 +5370,7 @@ impl App {
             s.project.bar = Some(memory[usize::from(signature)].unwrap_or(Project::BAR_DEFAULT));
             s.project.bar_as_signature = Some(signature);
             s.piano.dirty = true;
+            self.keep_playlist_scale(old);
         }
         self.invalidate();
         let mode = if signature { views::settings::SET_AS_SIGNATURE } else { views::settings::SET_AS_DIVISION };
@@ -5879,6 +5905,7 @@ impl App {
                     if let Some(i) = win.slot() {
                         self.state.wins[i].rect = r;
                     }
+                    crate::win_clamp::resized(&mut self.state, win);
                     let new = self.win_bounds(win);
                     self.damage_rect(old.union(&new));
                 }
@@ -6241,6 +6268,7 @@ impl App {
                     | Action::MonClose
                     | Action::Minimize
                     | Action::Maximize
+                    | Action::Fullscreen
                     | Action::Close
                     | Action::Play
                     | Action::Stop
@@ -8557,6 +8585,7 @@ impl App {
             }
             Action::Minimize => self.want_minimize = true,
             Action::Maximize => self.want_maximize = true,
+            Action::Fullscreen => self.want_fullscreen = true,
             Action::Close => self.want_close = true,
             Action::DragWindow => self.want_drag_window = true,
             Action::Bar(h) => self.bar_hit(h),
@@ -8900,7 +8929,7 @@ impl App {
                 self.invalidate();
             }
             Action::CloseWin(w) => s.hide(w),
-            Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserCollapse | Action::BrowserReread | Action::BrowserMenu | Action::BrowserSearch | Action::BrowserClear | Action::BrowserSplitter => {}
+            Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserCollapse | Action::BrowserReread | Action::BrowserMenu | Action::BrowserSearch | Action::BrowserClear | Action::BrowserSplitter | Action::BrowserUnfold => {}
             Action::TypeIn(t) => crate::typein::click(s, t),
             Action::PlaylistArea | Action::MixerArea | Action::RackArea | Action::Swallow => {}
             Action::PlTool(_)

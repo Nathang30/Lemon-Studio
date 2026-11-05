@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{sel, MainThreadMarker};
-use objc2_app_kit::{NSApplication, NSApplicationTerminateReply, NSEvent, NSScreen, NSView, NSWindow};
+use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions, NSApplicationTerminateReply, NSEvent, NSScreen, NSView, NSWindow};
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSURL};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
@@ -34,6 +34,8 @@ static OPENED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 thread_local! {
     /// The frame the maximized window goes back to.
     static RESTORE: Cell<Option<NSRect>> = const { Cell::new(None) };
+    /// The frame the full-screen window goes back to (`Some` while it is full screen).
+    static FULLSCREEN: Cell<Option<NSRect>> = const { Cell::new(None) };
 }
 
 /// Whether the user asked to quit since the last call: the app asks about unsaved changes and answers with `answer_quit`.
@@ -164,4 +166,32 @@ pub fn set_maximized(window: &Window, on: bool) {
         })
     };
     win.setFrame_display(frame, true);
+}
+
+/// Whether the window is full screen (`set_fullscreen`).
+pub fn is_fullscreen() -> bool {
+    FULLSCREEN.with(|f| f.get().is_some())
+}
+
+/// Full screen as the green traffic light does it: the window fills its whole screen, and the menu bar and the Dock
+/// hide for as long as the app is in front. Off, the window goes back to the frame it had. The window is borderless, so this
+/// is the presentation options and the screen's frame, not AppKit's Spaces full screen, which needs a titled window.
+pub fn set_fullscreen(window: &Window, on: bool) {
+    let (Some(mtm), Some(win)) = (MainThreadMarker::new(), ns_window(window)) else { return };
+    if on == is_fullscreen() {
+        return;
+    }
+    let app = NSApplication::sharedApplication(mtm);
+    if on {
+        let Some(screen) = win.screen() else { return };
+        FULLSCREEN.set(Some(win.frame()));
+        // The menu bar can only hide together with the Dock.
+        app.setPresentationOptions(NSApplicationPresentationOptions::HideDock | NSApplicationPresentationOptions::HideMenuBar);
+        win.setFrame_display(screen.frame(), true);
+    } else {
+        app.setPresentationOptions(NSApplicationPresentationOptions::empty());
+        if let Some(frame) = FULLSCREEN.take() {
+            win.setFrame_display(frame, true);
+        }
+    }
 }

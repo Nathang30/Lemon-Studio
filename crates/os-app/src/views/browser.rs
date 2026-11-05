@@ -789,6 +789,9 @@ pub fn marquee_offset(t: f32, over: f32) -> f32 {
 
 pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
+    if s.browser_folded {
+        return folded(ui, r);
+    }
     // Measured with the browser top at `WORK_Y`; it moves up with a hidden toolbar (spec: ui/toolbar-menu.md §5).
     let dy = r.y - super::WORK_Y;
     // The panel left of the splitter: 201 px measured, wider as the splitter is dragged (§9).
@@ -955,6 +958,19 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     ui.c.fill_rect(Rect::new(bw, r.y, 6.0, r.h), t.splitter);
     ui.c.fill_rect(Rect::new(bw + 6.0, r.y, 2.0, r.h), t.splitter_dark);
     ui.hit(Rect::new(bw, r.y, SPLITTER, r.h), Action::BrowserSplitter, "Browser: drag to resize, double-click for the default width");
+}
+
+/// The folded browser: a thin strip with three vertical dots; a click on it unfolds the browser.
+fn folded(ui: &mut Ui, r: Rect) {
+    let t = ui.t;
+    let hov = ui.hit(r, Action::BrowserUnfold, "Browser: click to unfold");
+    ui.c.fill_rect(r, if hov { t.splitter.shade(0.1) } else { t.splitter });
+    ui.c.fill_rect(Rect::new(r.right() - 2.0, r.y, 2.0, r.h), t.splitter_dark);
+    let (cx, cy) = (r.x + (r.w - 2.0) / 2.0, r.y + r.h / 2.0);
+    let dot = if hov { t.glyph } else { t.text_dim };
+    for dy in [-8.0, 0.0, 8.0] {
+        ui.c.fill_circle(cx, cy + dy, 1.8, dot);
+    }
 }
 
 /// The splitter's width right of the browser panel.
